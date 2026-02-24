@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+tfplan
+# Note: .terraform.lock.hcl is intentionally NOT ignored — commit it for reproducibility
+
+# Generated terraform.tfvars (written by bootstrap; may contain credentials)
+vsphere/terraform.tfvars
+
+# Sensitive config files — drop these in config/ but never commit them
+config/pull-secret.json
+config/additional-trust-bundle.pem
+
+# Generated cluster output
+# The default work dir is /opt/ocp-clusters/ (outside repo) — if you ever run
+# with --work-dir pointing inside the project, add the cluster name here.
+*.log
+cluster-context.yaml
+install-config.yaml.backup
+ocp4-roi/
