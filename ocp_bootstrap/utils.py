@@ -1,0 +1,65 @@
+import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+
+
+def setup_logging(cluster_name: str, work_dir: Path) -> logging.Logger:
+    logger = logging.getLogger("ocp-bootstrap")
+    if logger.handlers:
+        return logger  # already configured (e.g., re-invoked in same process)
+
+    logger.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)-7s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    log_file = work_dir / f"{cluster_name}-bootstrap.log"
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    return logger
+
+
+def run_cmd(
+    cmd: List[str],
+    cwd: Optional[Path] = None,
+    logger: Optional[logging.Logger] = None,
+    env: Optional[Dict] = None,
+) -> subprocess.CompletedProcess:
+    """Run a subprocess with logging. Raises RuntimeError on non-zero exit."""
+    cmd_str = " ".join(str(c) for c in cmd)
+    if logger:
+        logger.info(f"Running: {cmd_str}")
+
+    merged_env = {**os.environ, **(env or {})}
+
+    result = subprocess.run(
+        cmd, cwd=cwd, capture_output=True, text=True, env=merged_env
+    )
+
+    if logger:
+        if result.stdout.strip():
+            for line in result.stdout.strip().split("\n"):
+                logger.debug(f"  stdout: {line}")
+        if result.stderr.strip():
+            for line in result.stderr.strip().split("\n"):
+                logger.debug(f"  stderr: {line}")
+
+    if result.returncode != 0:
+        if logger:
+            logger.error(f"Command failed (rc={result.returncode}): {cmd_str}")
+            logger.error(f"stderr: {result.stderr}")
+        raise RuntimeError(f"Command failed: {cmd_str}\n{result.stderr}")
+
+    return result

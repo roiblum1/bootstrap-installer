@@ -1,0 +1,73 @@
+##############################################################################
+# Global defaults — shared across ALL sites
+# Values here can be overridden in config/sites/<site>.yaml
+##############################################################################
+
+# --- IP allocation offsets from the network address -------------------------
+# Modify only if your IP convention differs from the default layout:
+#   .1-.3  = infra nodes
+#   .4-.6  = control plane nodes
+#   .7     = bootstrap
+#   .8     = API VIP
+#   .9     = Ingress VIP
+#   .254   = gateway
+gateway_offset: 254
+infra_ip_offsets: [1, 2, 3]
+control_plane_ip_offsets: [4, 5, 6]
+bootstrap_ip_offset: 7
+api_vip_offset: 8
+ingress_vip_offset: 9
+
+# --- VM defaults -------------------------------------------------------------
+guest_id: coreos64Guest
+
+# Port-group naming template for the VM NIC.
+# Placeholders: {vlan_id}, {cluster_name}, {site}
+vm_network_template: "VLAN{vlan_id}-OCP"
+
+# --- Node sizing -------------------------------------------------------------
+control_plane_num_cpus: 8
+control_plane_memory: 24576      # MB
+control_plane_disk_size: 120     # GB
+
+infra_num_cpus: 8
+infra_memory: 32768              # MB
+infra_disk_size: 120             # GB
+
+compute_num_cpus: 4
+compute_memory: 8192             # MB
+compute_disk_size: 120           # GB
+
+bootstrap_disk_size: 100         # GB
+
+# --- OpenShift cluster networking --------------------------------------------
+# Override in the site profile if your environment uses different ranges.
+cluster_network_cidr: 10.132.0.0/14
+cluster_network_host_prefix: 23
+service_network_cidr: 172.31.0.0/16
+
+# --- Mirror registry ---------------------------------------------------------
+# Define image_mirrors as a list in the site profile (site-specific).
+# Example structure:
+#   image_mirrors:
+#     - source: quay.io/openshift-release-dev/ocp-release
+#       mirror: your-registry:5000/openshift/release
+#     - source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+#       mirror: your-registry:5000/openshift/release
+#     - source: registry.redhat.io
+#       mirror: your-registry:5000
+
+# --- Credentials and certificates -------------------------------------------
+# Drop files in config/ — no site profile change needed unless paths differ.
+#   pull_secret_path: config/pull-secret.json
+#   additional_trust_bundle_path: config/additional-trust-bundle.pem
+#   ssh_public_key_path: ~/.ssh/id_rsa.pub
+
+# --- Tool paths --------------------------------------------------------------
+openshift_install_bin: /usr/local/bin/openshift-install-4.20
+terraform_bin: /usr/local/bin/terraform
+terraform_dir: /opt/ocp-terraform
+
+# --- VLAN Manager ------------------------------------------------------------
+# Default VRF; override per site if needed
+vlan_manager_vrf: default

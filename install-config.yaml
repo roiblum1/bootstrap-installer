@@ -1,0 +1,22 @@
+apiVersion: v1
+baseDomain: // the domain for example example.domain 
+metadata:
+  name: // the name of the cluster, for example mycluster
+platform:
+  none: {}
+pullSecret: // example '{"auths":{"docker.io":{"auth":"<base64-encoded-auth>","email":", "username":"<username>","password":"<password>"}}}' 
+networking:
+  networkType: OVNKubernetes
+  clusterNetwork:
+  - cidr: 10.132.0.0/14
+    hostPrefix: 23
+  serviceNetwork:
+  - 172.31.0.0/16
+additionalTrustBundle: |-
+  -----BEGIN CERTIFICATE-----
+  < Certificate content here >
+  -----END CERTIFICATE-----
+sshKey: // the content of the public ssh key to be added to the cluster 
+imageDigestMirror:
+- mirror: // the mirror registry for the OpenShift release images, for example mirror.registry.com
+  source: // the source registry for the OpenShift release images, for example registry.redhat.io

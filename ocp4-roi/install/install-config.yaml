@@ -1,0 +1,18 @@
+apiVersion: v1
+baseDomain: ocp.example.local
+metadata:
+  name: ocp4-roi
+platform:
+  none: {}
+pullSecret: '{}'
+networking:
+  networkType: OVNKubernetes
+  clusterNetwork:
+  - cidr: 10.132.0.0/14
+    hostPrefix: 23
+  serviceNetwork:
+  - 172.31.0.0/16
+sshKey: ''
+imageDigestMirror:
+- mirror: mirror.registry.example.local:5000
+  source: registry.redhat.io
