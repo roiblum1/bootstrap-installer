@@ -4,19 +4,19 @@
 ##############################################################################
 
 # --- IP allocation offsets from the network address -------------------------
-# Modify only if your IP convention differs from the default layout:
-#   .1-.3  = infra nodes
-#   .4-.6  = control plane nodes
+# No VIPs — DNS round-robin across all nodes in each role:
+#   api/api-int  → all control plane IPs  (Terraform exec provisioner)
+#   *.apps       → all infra IPs           (Python API call)
+#
+# Default layout:
+#   .1-.3  = infra nodes       (ingress)
+#   .4-.6  = control plane     (API)
 #   .7     = bootstrap
-#   .8     = API VIP
-#   .9     = Ingress VIP
 #   .254   = gateway
 gateway_offset: 254
 infra_ip_offsets: [1, 2, 3]
 control_plane_ip_offsets: [4, 5, 6]
 bootstrap_ip_offset: 7
-api_vip_offset: 8
-ingress_vip_offset: 9
 
 # --- VM defaults -------------------------------------------------------------
 guest_id: coreos64Guest

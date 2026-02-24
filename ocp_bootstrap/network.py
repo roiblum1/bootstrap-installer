@@ -48,12 +48,11 @@ def calculate_ips(
     Calculate all IPs from the allocated segment and site profile offsets.
 
     Default convention:
-        .1-.3  = infra nodes
-        .4-.6  = control plane nodes
+        .1-.3  = infra nodes       (ingress — *.apps DNS round-robin)
+        .4-.6  = control plane     (API — api/api-int DNS round-robin)
         .7     = bootstrap
-        .8     = API VIP
-        .9     = Ingress VIP
-        .254   = gateway (configurable)
+        .254   = gateway
+    No VIPs — DNS round-robin across all nodes in each role.
     """
     network = ipaddress.ip_network(segment, strict=False)
     net_addr = network.network_address
@@ -62,15 +61,11 @@ def calculate_ips(
     infra_ips = [str(net_addr + o) for o in profile.get("infra_ip_offsets", [1, 2, 3])]
     cp_ips = [str(net_addr + o) for o in profile.get("control_plane_ip_offsets", [4, 5, 6])]
     bootstrap_ip = str(net_addr + profile.get("bootstrap_ip_offset", 7))
-    api_vip = str(net_addr + profile.get("api_vip_offset", 8))
-    ingress_vip = str(net_addr + profile.get("ingress_vip_offset", 9))
 
     logger.info(f"Network: {network} | Gateway: {gateway}")
-    logger.info(f"Infra IPs:         {infra_ips}")
-    logger.info(f"Control Plane IPs: {cp_ips}")
+    logger.info(f"Control Plane IPs: {cp_ips}  (api / api-int)")
+    logger.info(f"Infra IPs:         {infra_ips}  (*.apps ingress)")
     logger.info(f"Bootstrap IP:      {bootstrap_ip}")
-    logger.info(f"API VIP:           {api_vip}")
-    logger.info(f"Ingress VIP:       {ingress_vip}")
 
     return {
         "network": str(network),
@@ -81,6 +76,4 @@ def calculate_ips(
         "infra_ips": infra_ips,
         "control_plane_ips": cp_ips,
         "bootstrap_ip": bootstrap_ip,
-        "api_vip": api_vip,
-        "ingress_vip": ingress_vip,
     }

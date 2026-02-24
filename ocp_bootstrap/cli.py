@@ -93,11 +93,9 @@ def print_summary(
   Segment:          {segment}
   Gateway:          {ip_info['gateway']}
 
-  Control Plane:    {', '.join(ip_info['control_plane_ips'])}
-  Infra Nodes:      {', '.join(ip_info['infra_ips'])}
+  Control Plane:    {', '.join(ip_info['control_plane_ips'])}  (api / api-int)
+  Infra Nodes:      {', '.join(ip_info['infra_ips'])}  (*.apps ingress)
   Bootstrap:        {ip_info['bootstrap_ip']}
-  API VIP:          {ip_info['api_vip']}
-  Ingress VIP:      {ip_info['ingress_vip']}
 
   Kubeconfig:       {cluster_dir}/auth/kubeconfig
   Install Config:   {cluster_dir}/install-config.yaml.backup

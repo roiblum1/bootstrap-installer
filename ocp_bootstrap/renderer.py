@@ -69,7 +69,6 @@ def build_template_context(
         "ssh_key": ssh_key,
         "additional_trust_bundle": additional_trust_bundle,
         "vcenter_password": profile.get("vcenter_password", ""),
-        "dns_key_secret": profile.get("dns_key_secret", ""),
         # Networking defaults — override in site profile if needed
         "cluster_network_cidr": profile.get("cluster_network_cidr", "10.132.0.0/14"),
         "cluster_network_host_prefix": profile.get("cluster_network_host_prefix", 23),

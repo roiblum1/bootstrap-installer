@@ -12,7 +12,6 @@ vsphere_cluster: Cluster-Prod-01
 vsphere_datastore_cluster: DSC-Prod-SiteA
 vsphere_dvs_name: DVS-Prod-SiteA
 vsphere_folder: /DC-SiteA/vm/OCP-Clusters
-resource_pool: OCP-Clusters
 vm_template: rhcos-420
 
 # Network
@@ -21,9 +20,6 @@ search_domain: example.local
 dns_servers:
   - 10.100.0.10
   - 10.100.0.11
-dns_key_name: ocp-update-key
-dns_key_secret_env: DNS_TSIG_SECRET
-dns_server_target: 10.100.0.10
 
 # Container Registry mirrors (disconnected)
 # One entry per source — add more entries for operators, additional registries, etc.
