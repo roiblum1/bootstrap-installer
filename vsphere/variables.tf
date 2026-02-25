@@ -14,7 +14,6 @@ variable "vsphere_user" {
 
 variable "vsphere_password" {
   type        = string
-  sensitive   = true
   description = "vSphere server password."
 }
 

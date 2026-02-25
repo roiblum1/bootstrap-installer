@@ -1,131 +1,266 @@
 # ocp-bootstrap
 
-Automated OpenShift 4.20 UPI cluster creation on vSphere in disconnected environments.
+Automated OpenShift 4.20 UPI cluster provisioning on vSphere for disconnected (airgap) environments.
 
-Replaces the manual 8-step creation process with a single command that takes you from zero to a running cluster ready for ArgoCD.
+Replaces a multi-hour manual process with a single command: cluster config YAML in → running cluster out.
+
+---
 
 ## What It Does
 
 ```
-VLAN Manager ──> IP Calculation ──> Template Rendering ──> openshift-install ──> DNS ──> Terraform ──> CSR Approval
-     │                │                     │                     │               │          │              │
-  allocate        derive IPs          install-config.yaml    create manifests   nsupdate   apply plan    auto-approve
-  segment         from subnet         terraform.tfvars       inject v4Subnet               create VMs    until Available
-                                      dns-update.sh          create ignition
-                                      ifcfg configs
+Cluster YAML
+     │
+     ▼
+Three-layer config merge          VLAN Manager (optional)
+defaults.yaml                          │
+  + sites/<site>.yaml    ──────────────┤
+  + clusters/<name>.yaml              segment / VLAN ID
+     │                                 │
+     ▼                                 ▼
+  IP Calculation    ──────────>   Template Rendering
+  (.1-.3 infra                   install-config.yaml
+   .4-.6 control plane           terraform.tfvars
+   .7    bootstrap               v4-internal-subnet.yaml
+   .254  gateway)
+     │
+     ├──> openshift-install   (manifests → inject v4InternalSubnet → ignition)
+     │
+     ├──> Wildcard DNS API    (*.apps → all 3 infra IPs)
+     │
+     ├──> Terraform           (provision VMs + api/api-int DNS via exec provisioner)
+     │
+     └──> CSR approval loop   (auto-approve until all nodes Ready)
 ```
+
+**DNS topology — no VIPs, no load balancer required:**
+
+| Record                       | Resolves to                                     |
+| ---------------------------- | ----------------------------------------------- |
+| `api.<cluster>.<domain>`     | All 3 control plane IPs (round-robin A records) |
+| `api-int.<cluster>.<domain>` | All 3 control plane IPs (round-robin A records) |
+| `*.apps.<cluster>.<domain>`  | All 3 infra node IPs (round-robin A records)    |
+
+---
 
 ## Prerequisites
 
-- Python 3.9+
-- `openshift-install-4.20` binary
-- `terraform` binary
-- `oc` CLI
-- `nsupdate` (for DNS record creation)
-- Access to VLAN Manager API
-- Pull secret with artifactory credentials
+| Tool                     | Purpose                                  |
+| ------------------------ | ---------------------------------------- |
+| Python 3.9+              | Run this tool                            |
+| `openshift-install-4.20` | Generate manifests and ignition configs  |
+| `terraform` ≥ 0.13       | Provision vSphere VMs                    |
+| `oc` CLI                 | CSR approval loop                        |
 
-## Quick Start
+Terraform providers (`vmware/vsphere`, `community-terraform-providers/ignition`, `hashicorp/null`) are **pre-downloaded** into `vsphere/providers/` and committed to this repo. No internet access is needed after cloning.
+
+---
+
+## Installation
 
 ```bash
-# Install Python dependencies
+git clone <repo-url>
+cd bootstrap-installer
 pip install -r requirements.txt
-
-# Set required environment variables
-export VSPHERE_PASSWORD="your-vcenter-password"
-export DNS_TSIG_SECRET="your-dns-key-secret"
-
-# Place your pull secret
-cp /path/to/pull-secret.json config/pull-secret.json
-
-# (Optional) Place your org CA bundle
-cp /path/to/ca-bundle.pem config/additional-trust-bundle.pem
-
-# Run the full bootstrap
-python3 bootstrap.py --cluster-name mce-prod-01 --site site-a
 ```
+
+No additional Terraform setup needed. `terraform init` will use the committed local providers automatically.
+
+---
+
+## Configuration
+
+The tool uses a **three-layer merge** — each layer overrides the one above it:
+
+```
+config/defaults.yaml                   ← global defaults (sizing, offsets, tool paths)
+  └── config/sites/<site>.yaml         ← per-site (vcenter, DNS, mirrors, APIs)
+        └── config/clusters/<name>.yaml  ← per-cluster (name, segment, port group)
+```
+
+### 1. Global defaults — `config/defaults.yaml`
+
+Pre-configured with sensible values. Tune VM sizing, IP offsets, or cluster networking ranges here if your environment differs. Key values:
+
+```yaml
+gateway_offset: 254
+infra_ip_offsets: [1, 2, 3]
+control_plane_ip_offsets: [4, 5, 6]
+bootstrap_ip_offset: 7
+
+control_plane_num_cpus: 8
+control_plane_memory: 24576   # MB
+infra_num_cpus: 8
+infra_memory: 32768           # MB
+```
+
+### 2. Site profile — `config/sites/<site>.yaml`
+
+Create one file per physical site. See `config/sites/site-a.yaml` as a reference:
+
+```yaml
+site_name: site-a
+
+# vSphere
+vcenter: vcenter.site-a.example.local
+vcenter_user: administrator@vsphere.local
+vcenter_password_env: VSPHERE_PASSWORD   # reads $VSPHERE_PASSWORD at runtime
+datacenter: DC-SiteA
+vsphere_cluster: Cluster-Prod-01
+vsphere_datastore_cluster: DSC-Prod-SiteA
+vsphere_dvs_name: DVS-Prod-SiteA
+vsphere_folder: /DC-SiteA/vm/OCP-Clusters
+vm_template: rhcos-420
+
+# DNS / network
+base_domain: ocp.example.local
+search_domain: example.local
+dns_servers:
+  - 10.100.0.10
+  - 10.100.0.11
+
+# Mirror registry (one entry per source — add more for operators, etc.)
+image_mirrors:
+  - source: quay.io/openshift-release-dev/ocp-release
+    mirror: mirror.registry.example.local:5000/openshift/release
+  - source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+    mirror: mirror.registry.example.local:5000/openshift/release
+  - source: registry.redhat.io
+    mirror: mirror.registry.example.local:5000
+
+# APIs
+wildcard_dns_api_url: http://dns-api.example.local:8080/api/wildcard
+vlan_manager_url: http://vlan-manager.example.local:8000   # omit if you set segment manually
+```
+
+### 3. Cluster config — `config/clusters/<cluster>.yaml`
+
+One file per cluster. See `config/clusters/example-cluster.yaml` for a full reference:
+
+```yaml
+cluster_name: my-cluster-01
+site: site-a
+
+# Set segment+vlan_id directly, or omit both to auto-allocate via VLAN Manager
+segment: 10.0.5.0/24
+vlan_id: 105
+
+# vSphere port group for this cluster's VMs
+vm_network: VLAN105-OCP
+
+# Any key from defaults.yaml or the site profile can be overridden here
+# openshift_install_bin: /usr/local/bin/openshift-install-4.21
+```
+
+### Sensitive files (never committed)
+
+Place these in `config/` before running:
+
+| File                                  | Description                              |
+| ------------------------------------- | ---------------------------------------- |
+| `config/pull-secret.json`             | Red Hat / mirror registry pull secret    |
+| `config/additional-trust-bundle.pem`  | CA certificate for your mirror registry  |
+
+Set the vCenter password as an environment variable (name must match `vcenter_password_env` in the site profile):
+
+```bash
+export VSPHERE_PASSWORD="your-vcenter-password"
+```
+
+---
 
 ## Usage
 
 ```bash
-# Full automated run
-python3 bootstrap.py --cluster-name mce-prod-01 --site site-a
+# Full bootstrap — ignition + DNS + Terraform + CSR approval
+python3 bootstrap.py --config config/clusters/my-cluster-01.yaml
 
-# Generate configs only (no terraform, no DNS)
-python3 bootstrap.py --cluster-name mce-prod-01 --site site-a --skip-terraform --skip-dns
+# Generate configs only, no Terraform (dry-run / review)
+python3 bootstrap.py --config config/clusters/my-cluster-01.yaml --skip-terraform
 
-# Provide segment directly (skip VLAN Manager)
-python3 bootstrap.py --cluster-name mce-prod-01 --site site-a \
-  --segment 10.0.5.0/24 --vlan-id 105
+# Re-run Terraform only (ignition already exists)
+python3 bootstrap.py --config config/clusters/my-cluster-01.yaml --skip-ignition --skip-dns
 
-# Skip CSR approval (approve manually later)
-python3 bootstrap.py --cluster-name mce-prod-01 --site site-a --skip-csr
+# Use a custom output directory
+python3 bootstrap.py --config config/clusters/my-cluster-01.yaml --work-dir /tmp/ocp-dry-run
 
-# Use existing ignition files (re-run terraform only)
-python3 bootstrap.py --cluster-name mce-prod-01 --site site-a --skip-ignition
+# Destroy a previously provisioned cluster
+python3 bootstrap.py --config config/clusters/my-cluster-01.yaml --destroy
+
+# Extend the CSR approval window to 60 minutes
+python3 bootstrap.py --config config/clusters/my-cluster-01.yaml --csr-timeout 60
 ```
+
+Run `python3 bootstrap.py --help` for the full reference.
+
+---
 
 ## Project Structure
 
 ```
-ocp-bootstrap/
-├── bootstrap.py                 # Main CLI entrypoint
+bootstrap-installer/
+├── bootstrap.py                      # Entrypoint
 ├── requirements.txt
 ├── config/
+│   ├── defaults.yaml                 # Global defaults (committed)
 │   ├── sites/
-│   │   ├── site-a.yaml          # Site profile (vcenter, dns, sizing, etc.)
-│   │   └── site-b.yaml
-│   ├── pull-secret.json         # Pull secret (with artifactory)
-│   └── additional-trust-bundle.pem  # (optional) Org CA cert
-└── templates/
-    ├── install-config.yaml.j2   # OpenShift install config
-    ├── terraform.tfvars.j2      # Terraform variables
-    ├── v4-internal-subnet.yaml.j2  # v4InternalSubnet manifest
-    ├── dns-update.sh.j2         # DNS record creation script
-    └── ifcfg-ens192.j2          # Static network config for VMs
+│   │   └── <site>.yaml               # Site profile — create one per site
+│   └── clusters/
+│       ├── example-cluster.yaml      # Reference example
+│       └── <cluster>.yaml            # Your cluster configs (one per cluster)
+├── ocp_bootstrap/                    # Python package
+│   ├── cli.py                        # Argument parsing + orchestration
+│   ├── constants.py                  # Path constants (auto-resolved from repo root)
+│   ├── network.py                    # VLAN allocation + IP calculation
+│   ├── renderer.py                   # Jinja2 template rendering
+│   ├── site.py                       # Three-layer config merge
+│   ├── installer.py                  # openshift-install wrapper
+│   ├── terraform.py                  # Terraform init/plan/apply/destroy
+│   ├── dns.py                        # Wildcard DNS API call
+│   ├── csr.py                        # CSR approval loop
+│   └── utils.py                      # Logging, run_cmd
+├── templates/
+│   ├── install-config.yaml.j2        # OpenShift install config
+│   ├── terraform.tfvars.j2           # Terraform input variables
+│   └── v4-internal-subnet.yaml.j2    # OVN v4InternalSubnet manifest
+└── vsphere/                          # Terraform root module
+    ├── main.tf                       # VMs, folder, resource pool, DNS modules
+    ├── variables.tf
+    ├── versions.tf
+    ├── .terraform.lock.hcl           # Committed — pins provider versions
+    ├── providers/                    # Pre-downloaded provider zips (committed)
+    │   └── registry.terraform.io/
+    │       ├── vmware/vsphere/
+    │       ├── community-terraform-providers/ignition/
+    │       └── hashicorp/null/
+    ├── vm/                           # Reusable VM module (bootstrap, control plane, infra, compute)
+    ├── dns_a_record/                 # Node A + PTR record module
+    └── api_a_record/                 # api / api-int A record module
 ```
 
-## Site Profiles
-
-Each site gets a YAML profile in `config/sites/`. This eliminates hardcoded per-site values:
-
-```yaml
-site_name: site-a
-vcenter: vcenter.site-a.example.local
-datacenter: DC-SiteA
-dns_servers: [10.100.0.10, 10.100.0.11]
-gateway_offset: 254              # .254 in each subnet
-infra_ip_offsets: [1, 2, 3]      # .1-.3 for infra
-control_plane_ip_offsets: [4, 5, 6]  # .4-.6 for control plane
-```
-
-Sensitive values reference environment variables:
-```yaml
-vcenter_password_env: VSPHERE_PASSWORD    # reads $VSPHERE_PASSWORD
-dns_key_secret_env: DNS_TSIG_SECRET       # reads $DNS_TSIG_SECRET
-```
+---
 
 ## IP Allocation
 
-From an allocated segment (e.g., `10.0.5.0/24`):
+From a `/24` segment (e.g. `10.0.5.0/24`) the default offsets produce:
 
-| Offset | Role | Example IP |
-|--------|------|------------|
-| .1-.3 | Infra nodes | 10.0.5.1 - 10.0.5.3 |
-| .4-.6 | Control plane | 10.0.5.4 - 10.0.5.6 |
-| .7 | Bootstrap (temporary) | 10.0.5.7 |
-| .8 | API VIP | 10.0.5.8 |
-| .9 | Ingress VIP | 10.0.5.9 |
-| .254 | Gateway | 10.0.5.254 |
+| IP                   | Role                                          |
+| -------------------- | --------------------------------------------- |
+| 10.0.5.1 - 10.0.5.3 | Infra nodes (`*.apps` ingress)                |
+| 10.0.5.4 - 10.0.5.6 | Control plane (`api` / `api-int`)             |
+| 10.0.5.7             | Bootstrap (temporary, removed after install)  |
+| 10.0.5.254           | Gateway                                       |
 
-All offsets are configurable per site profile.
+Override `infra_ip_offsets`, `control_plane_ip_offsets`, `bootstrap_ip_offset`, and `gateway_offset` in `defaults.yaml` or the site profile to change the layout.
+
+---
 
 ## Output
 
-After a successful run, you'll find everything under `/opt/ocp-clusters/<cluster-name>/`:
+Cluster artifacts are written to `<work-dir>/<cluster-name>/` (default: `/opt/ocp-clusters/<cluster-name>/`):
 
 ```
-/opt/ocp-clusters/mce-prod-01/
+/opt/ocp-clusters/my-cluster-01/
 ├── auth/
 │   ├── kubeconfig
 │   └── kubeadmin-password
@@ -133,19 +268,41 @@ After a successful run, you'll find everything under `/opt/ocp-clusters/<cluster
 │   ├── bootstrap.ign
 │   ├── master.ign
 │   └── worker.ign
-├── install/                     # openshift-install working directory
-├── install-config.yaml.backup   # Preserved install-config
-├── terraform.tfvars             # Generated tfvars
-├── dns-update.sh                # DNS creation script
-├── v4-internal-subnet.yaml      # Injected manifest
-├── cluster-context.yaml         # Full context (for Day2 tooling)
-└── mce-prod-01-bootstrap.log    # Full log
+├── install/                          # openshift-install working directory
+├── install-config.yaml.backup        # Preserved before consumption by openshift-install
+├── terraform.tfvars                  # Generated and passed to Terraform
+├── terraform.tfstate                 # Per-cluster state (kept separate per cluster)
+├── cluster-context.yaml              # Full rendered context (for Day2 tooling)
+└── my-cluster-01-bootstrap.log       # Full execution log
 ```
 
-## What Comes Next
+---
 
-This tool gets you to a running cluster. The next step is the Day2 bootstrap script that installs the OpenShift GitOps operator and configures ArgoCD to point at your GitOps repo, which then manages everything else (infra labeling, LDAP, MCE, operators, etc.).
+## Airgap / Disconnected Operation
 
-## Network Configuration Note
+This repo is designed to run with **zero internet access** after cloning:
 
-The `ifcfg-ens192.j2` template and `terraform.tfvars.j2` both derive their network configuration (netmask, gateway, prefix length) from the single `segment` CIDR returned by the VLAN Manager. This eliminates the previous need to manually update hardcoded values in `ifcfg` files and `main.tf`.
+- **Terraform providers** are committed in `vsphere/providers/` as packed zips for `linux_amd64` (generated with `terraform providers mirror`)
+- At runtime the bootstrap tool writes a temporary `filesystem_mirror` Terraform CLI config and sets `TF_CLI_CONFIG_FILE` — `terraform init` reads providers locally, no registry calls are made
+- **Container image mirrors** are configured per site via `image_mirrors` in the site profile and rendered into `install-config.yaml`
+
+To update providers when a new version is released (run on a connected machine, then commit):
+
+```bash
+cd vsphere/
+terraform providers mirror -platform=linux_amd64 providers/
+git add providers/ .terraform.lock.hcl
+git commit -m "Update Terraform providers to <version>"
+```
+
+---
+
+## After Bootstrap
+
+```bash
+export KUBECONFIG=/opt/ocp-clusters/my-cluster-01/auth/kubeconfig
+oc get nodes
+oc get clusteroperators
+```
+
+Once all nodes are `Ready` and all cluster operators are `Available`, proceed with Day2: install the OpenShift GitOps operator and point ArgoCD at your GitOps repository to manage infra labeling, LDAP, MCE, additional operators, and everything else.

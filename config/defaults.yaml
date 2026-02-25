@@ -66,7 +66,14 @@ service_network_cidr: 172.31.0.0/16
 # --- Tool paths --------------------------------------------------------------
 openshift_install_bin: /usr/local/bin/openshift-install-4.20
 terraform_bin: /usr/local/bin/terraform
-terraform_dir: /opt/ocp-terraform
+# terraform_dir defaults to the vsphere/ folder inside the cloned repo (auto-resolved).
+# Override here only if you keep the Terraform code somewhere else.
+# terraform_dir: /opt/ocp-terraform
+# Local provider mirror for disconnected environments.
+# Relative paths are resolved against terraform_dir (default: vsphere/ in this repo).
+# ./providers resolves to vsphere/providers/ which is committed to the repo —
+# no internet access needed after cloning.
+terraform_plugin_dir: ./providers
 
 # --- VLAN Manager ------------------------------------------------------------
 # Default VRF; override per site if needed

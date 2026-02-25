@@ -16,9 +16,13 @@ venv/
 *.tfstate.backup
 tfplan
 # Note: .terraform.lock.hcl is intentionally NOT ignored — commit it for reproducibility
+# Note: vsphere/providers/ is intentionally NOT ignored — provider binaries are committed
+#       for disconnected/airgap environments (terraform init -plugin-dir=./providers)
 
 # Generated terraform.tfvars (written by bootstrap; may contain credentials)
 vsphere/terraform.tfvars
+# Generated at runtime by bootstrap tool (filesystem_mirror CLI config)
+**/.providers.tfrc
 
 # Sensitive config files — drop these in config/ but never commit them
 config/pull-secret.json

@@ -1,0 +1,18 @@
+# Cluster config — one file per cluster
+# Inherits: config/defaults.yaml → config/sites/<site>.yaml → this file (wins)
+
+cluster_name: my-cluster-01
+site: site-a
+
+# Network
+segment: 10.0.5.0/24       # CIDR allocated for this cluster; omit to use VLAN Manager
+vlan_id: 105                # optional, used for vm_network_template if vm_network not set
+
+# vSphere port group for this cluster's VMs.
+# Set explicitly because port group names are not always derivable from the VLAN ID.
+vm_network: VLAN105-OCP
+
+# Optional: override any site or global default for this specific cluster
+# wildcard_dns_api_url: http://other-dns-api/api/wildcard
+# openshift_install_bin: /usr/local/bin/openshift-install-4.21
+# terraform_dir: /opt/ocp-terraform-dev
