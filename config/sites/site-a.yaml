@@ -21,18 +21,5 @@ dns_servers:
   - 10.100.0.10
   - 10.100.0.11
 
-# Container Registry mirrors (disconnected)
-# One entry per source — add more entries for operators, additional registries, etc.
-image_mirrors:
-  - source: quay.io/openshift-release-dev/ocp-release
-    mirror: mirror.registry.example.local:5000/openshift/release
-  - source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-    mirror: mirror.registry.example.local:5000/openshift/release
-  - source: registry.redhat.io
-    mirror: mirror.registry.example.local:5000
-
-# Wildcard DNS API (*.apps only; api/api-int handled by Terraform exec provisioner)
-wildcard_dns_api_url: http://dns-api.example.local:8080/api/wildcard
-
-# VLAN Manager
-vlan_manager_url: http://vlan-manager.site-a.example.local:8000
+# Override image_mirrors, wildcard_dns_api_url, or vlan_manager_url here
+# if this site uses different endpoints than the defaults.

@@ -74,29 +74,44 @@ The tool uses a **three-layer merge** — each layer overrides the one above it:
 
 ```
 config/defaults.yaml                   ← global defaults (sizing, offsets, tool paths)
-  └── config/sites/<site>.yaml         ← per-site (vcenter, DNS, mirrors, APIs)
+  └── config/sites/<site>.yaml         ← per-site (vcenter, vSphere topology, DNS servers)
         └── config/clusters/<name>.yaml  ← per-cluster (name, segment, port group)
 ```
 
 ### 1. Global defaults — `config/defaults.yaml`
 
-Pre-configured with sensible values. Tune VM sizing, IP offsets, or cluster networking ranges here if your environment differs. Key values:
+Shared across all sites. Update this file with your environment's actual values before first use. Key values:
 
 ```yaml
+# IP layout
 gateway_offset: 254
 infra_ip_offsets: [1, 2, 3]
 control_plane_ip_offsets: [4, 5, 6]
 bootstrap_ip_offset: 7
 
+# VM sizing
 control_plane_num_cpus: 8
 control_plane_memory: 24576   # MB
 infra_num_cpus: 8
 infra_memory: 32768           # MB
+
+# Mirror registry (one entry per source; override per site/cluster if needed)
+image_mirrors:
+  - source: quay.io/openshift-release-dev/ocp-release
+    mirror: mirror.registry.example.local:5000/openshift/release
+  - source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+    mirror: mirror.registry.example.local:5000/openshift/release
+  - source: registry.redhat.io
+    mirror: mirror.registry.example.local:5000
+
+# APIs
+wildcard_dns_api_url: http://dns-api.example.local:8080/api/wildcard
+vlan_manager_url: http://vlan-manager.example.local:8000
 ```
 
 ### 2. Site profile — `config/sites/<site>.yaml`
 
-Create one file per physical site. See `config/sites/site-a.yaml` as a reference:
+Contains only what differs per physical site — vSphere topology and local network. Everything else (mirrors, APIs, sizing) is inherited from `defaults.yaml`. See `config/sites/site-a.yaml` as a reference:
 
 ```yaml
 site_name: site-a
@@ -119,18 +134,8 @@ dns_servers:
   - 10.100.0.10
   - 10.100.0.11
 
-# Mirror registry (one entry per source — add more for operators, etc.)
-image_mirrors:
-  - source: quay.io/openshift-release-dev/ocp-release
-    mirror: mirror.registry.example.local:5000/openshift/release
-  - source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-    mirror: mirror.registry.example.local:5000/openshift/release
-  - source: registry.redhat.io
-    mirror: mirror.registry.example.local:5000
-
-# APIs
-wildcard_dns_api_url: http://dns-api.example.local:8080/api/wildcard
-vlan_manager_url: http://vlan-manager.example.local:8000   # omit if you set segment manually
+# Override image_mirrors, wildcard_dns_api_url, or vlan_manager_url here
+# only if this site uses different endpoints than the defaults.
 ```
 
 ### 3. Cluster config — `config/clusters/<cluster>.yaml`

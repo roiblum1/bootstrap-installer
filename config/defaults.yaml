@@ -47,15 +47,14 @@ cluster_network_host_prefix: 23
 service_network_cidr: 172.31.0.0/16
 
 # --- Mirror registry ---------------------------------------------------------
-# Define image_mirrors as a list in the site profile (site-specific).
-# Example structure:
-#   image_mirrors:
-#     - source: quay.io/openshift-release-dev/ocp-release
-#       mirror: your-registry:5000/openshift/release
-#     - source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-#       mirror: your-registry:5000/openshift/release
-#     - source: registry.redhat.io
-#       mirror: your-registry:5000
+# One entry per source registry. Override per site/cluster if mirrors differ.
+image_mirrors:
+  - source: quay.io/openshift-release-dev/ocp-release
+    mirror: mirror.registry.example.local:5000/openshift/release
+  - source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+    mirror: mirror.registry.example.local:5000/openshift/release
+  - source: registry.redhat.io
+    mirror: mirror.registry.example.local:5000
 
 # --- Credentials and certificates -------------------------------------------
 # Drop files in config/ — no site profile change needed unless paths differ.
@@ -75,6 +74,10 @@ terraform_bin: /usr/local/bin/terraform
 # no internet access needed after cloning.
 terraform_plugin_dir: ./providers
 
-# --- VLAN Manager ------------------------------------------------------------
-# Default VRF; override per site if needed
+# --- APIs --------------------------------------------------------------------
+# Wildcard DNS API (*.apps records; api/api-int handled by Terraform exec provisioner)
+wildcard_dns_api_url: http://dns-api.example.local:8080/api/wildcard
+
+# VLAN Manager — omit vlan_manager_url in the cluster config to use it for auto-allocation
+vlan_manager_url: http://vlan-manager.example.local:8000
 vlan_manager_vrf: default
