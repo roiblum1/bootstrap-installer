@@ -5,12 +5,16 @@ cluster_name: my-cluster-01
 site: site-a
 
 # Network
-segment: 10.0.5.0/24       # CIDR allocated for this cluster; omit to use VLAN Manager
-vlan_id: 105                # optional, used for vm_network_template if vm_network not set
+segment: 10.0.5.0/24   # CIDR for this cluster; omit to auto-allocate via VLAN Manager
+vm_network: VLAN105-OCP # vSphere port group (EPG) for this cluster's VMs
 
-# vSphere port group for this cluster's VMs.
-# Set explicitly because port group names are not always derivable from the VLAN ID.
-vm_network: VLAN105-OCP
+# Optional: compute nodes (workers)
+# By default no compute nodes are created — infra nodes handle all workloads.
+# Uncomment to add dedicated compute VMs (IPs are offsets from the segment address).
+# compute_ip_offsets: [8, 9, 10]   # 3 compute nodes at .8, .9, .10
+# compute_num_cpus: 4
+# compute_memory: 8192             # MB
+# compute_disk_size: 120           # GB
 
 # Optional: override any site or global default for this specific cluster
 # wildcard_dns_api_url: http://other-dns-api/api/wildcard

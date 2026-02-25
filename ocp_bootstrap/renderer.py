@@ -52,12 +52,11 @@ def build_template_context(
     if trust_bundle_path.exists():
         additional_trust_bundle = trust_bundle_path.read_text().strip()
 
-    # vm_network: explicit cluster config value wins; fallback to site template
-    if "vm_network" in profile:
-        vm_network = profile["vm_network"]
-    else:
-        vm_network = profile.get("vm_network_template", "VLAN{vlan_id}-OCP").format(
-            vlan_id=vlan_id, cluster_name=cluster_name, site=profile["site_name"]
+    vm_network = profile.get("vm_network")
+    if not vm_network:
+        raise ValueError(
+            "vm_network is required in the cluster config "
+            "(e.g. vm_network: VLAN105-OCP)"
         )
 
     return {

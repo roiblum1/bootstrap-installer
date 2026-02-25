@@ -94,12 +94,12 @@ def print_summary(
 {'='*70}
 
   Site:             {profile['site_name']}
-  VLAN ID:          {vlan_id}
   Segment:          {segment}
   Gateway:          {ip_info['gateway']}
 
   Control Plane:    {', '.join(ip_info['control_plane_ips'])}  (api / api-int)
   Infra Nodes:      {', '.join(ip_info['infra_ips'])}  (*.apps ingress)
+  Compute Nodes:    {', '.join(ip_info['compute_ips']) if ip_info['compute_ips'] else '(none)'}
   Bootstrap:        {ip_info['bootstrap_ip']}
 
   Kubeconfig:       {cluster_dir}/auth/kubeconfig

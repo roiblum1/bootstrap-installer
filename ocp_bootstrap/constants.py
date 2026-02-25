@@ -7,5 +7,5 @@ TEMPLATES_DIR = SCRIPT_DIR / "templates"
 SITES_DIR = SCRIPT_DIR / "config" / "sites"
 CLUSTERS_DIR = SCRIPT_DIR / "config" / "clusters"
 DEFAULTS_FILE = SCRIPT_DIR / "config" / "defaults.yaml"
-DEFAULT_WORK_DIR = Path("/opt/ocp-clusters")
+DEFAULT_WORK_DIR = SCRIPT_DIR / "clusters"
 TERRAFORM_DIR = SCRIPT_DIR / "vsphere"

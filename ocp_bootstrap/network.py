@@ -61,11 +61,14 @@ def calculate_ips(
     infra_ips = [str(net_addr + o) for o in profile.get("infra_ip_offsets", [1, 2, 3])]
     cp_ips = [str(net_addr + o) for o in profile.get("control_plane_ip_offsets", [4, 5, 6])]
     bootstrap_ip = str(net_addr + profile.get("bootstrap_ip_offset", 7))
+    compute_ips = [str(net_addr + o) for o in profile.get("compute_ip_offsets", [])]
 
     logger.info(f"Network: {network} | Gateway: {gateway}")
     logger.info(f"Control Plane IPs: {cp_ips}  (api / api-int)")
     logger.info(f"Infra IPs:         {infra_ips}  (*.apps ingress)")
     logger.info(f"Bootstrap IP:      {bootstrap_ip}")
+    if compute_ips:
+        logger.info(f"Compute IPs:       {compute_ips}")
 
     return {
         "network": str(network),
@@ -76,4 +79,5 @@ def calculate_ips(
         "infra_ips": infra_ips,
         "control_plane_ips": cp_ips,
         "bootstrap_ip": bootstrap_ip,
+        "compute_ips": compute_ips,
     }

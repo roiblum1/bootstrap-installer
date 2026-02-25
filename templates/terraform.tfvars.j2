@@ -39,10 +39,10 @@ control_plane_num_cpus      = {{ control_plane_num_cpus | default(4) }}
 control_plane_memory        = {{ control_plane_memory | default(16384) }}
 control_plane_disk_size     = {{ control_plane_disk_size | default(120) }}
 
-# Compute (workers) — set to 0; infra nodes serve as workers in this topology
+# Compute (workers) — add compute_ip_offsets in the cluster config to provision these
 compute_ignition_path = "{{ ignition_dir }}/worker.ign"
-compute_count         = 0
-compute_ips           = []
+compute_count         = {{ compute_ips | length }}
+compute_ips           = [{{ compute_ips | map('tojson') | join(', ') }}]
 compute_num_cpus      = {{ compute_num_cpus | default(4) }}
 compute_memory        = {{ compute_memory | default(8192) }}
 compute_disk_size     = {{ compute_disk_size | default(120) }}
