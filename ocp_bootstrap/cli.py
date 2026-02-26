@@ -1,11 +1,13 @@
 import argparse
 import logging
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict
 
 import yaml
 
+from .argocd import register_cluster_in_argocd
 from .constants import DEFAULT_WORK_DIR, CLUSTERS_DIR, TERRAFORM_DIR
 from .csr import approve_csrs
 from .dns import create_wildcard_dns_via_api
@@ -14,248 +16,238 @@ from .network import allocate_vlan, calculate_ips
 from .renderer import build_template_context, render_templates
 from .site import load_site_profile
 from .terraform import run_terraform, run_terraform_destroy
-from .utils import setup_logging
+from .utils import setup_logging, validate_prerequisites
 
+
+@dataclass
+class ClusterCtx:
+    """All resolved state for a single cluster bootstrap run."""
+    name: str
+    site: str
+    profile: Dict[str, Any]
+    cluster_dir: Path
+    install_dir: Path
+    ignition_dir: Path
+    tfstate_path: Path
+    logger: logging.Logger
+    segment: str = ""
+    vlan_id: str = "0"
+    ip_info: Dict = field(default_factory=dict)
+    template_ctx: Dict = field(default_factory=dict)
+    template_outputs: Dict = field(default_factory=dict)
+
+    @property
+    def kubeconfig(self) -> Path:
+        return self.cluster_dir / "auth" / "kubeconfig"
+
+    @property
+    def terraform_bin(self) -> str:
+        return self.profile.get("terraform_bin", "terraform")
+
+    @property
+    def terraform_dir(self) -> str:
+        return self.profile.get("terraform_dir", str(TERRAFORM_DIR))
+
+    @property
+    def plugin_dir(self) -> str | None:
+        return self.profile.get("terraform_plugin_dir") or None
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Bootstrap OpenShift 4.20 UPI cluster on vSphere (disconnected)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  Full bootstrap (ignition + DNS + terraform + CSR approval):
-    %(prog)s --config config/clusters/my-cluster-01.yaml
+    p = argparse.ArgumentParser(description="Bootstrap OpenShift 4.20 UPI on vSphere (disconnected)")
+    p.add_argument("--config", required=True, help="Cluster YAML (config/clusters/<name>.yaml)")
+    p.add_argument("--work-dir", default=str(DEFAULT_WORK_DIR), help=f"Output directory (default: {DEFAULT_WORK_DIR})")
+    p.add_argument("--destroy", action="store_true", help="Destroy the cluster (terraform destroy)")
+    p.add_argument("--skip-dns", action="store_true", help="Skip wildcard DNS creation")
+    p.add_argument("--skip-terraform", action="store_true", help="Skip terraform (generate configs only)")
+    p.add_argument("--skip-csr", action="store_true", help="Skip CSR approval loop")
+    p.add_argument("--skip-ignition", action="store_true", help="Skip openshift-install (use existing ignition)")
+    p.add_argument("--skip-argocd", action="store_true", help="Skip ArgoCD hub registration")
+    p.add_argument("--csr-timeout", type=int, default=45, help="CSR approval timeout in minutes (default: 45)")
+    return p.parse_args()
 
-  Generate configs only, skip terraform (useful for review/dry-run):
-    %(prog)s --config config/clusters/my-cluster-01.yaml --skip-terraform
 
-  Re-run terraform only (ignition already exists):
-    %(prog)s --config config/clusters/my-cluster-01.yaml --skip-ignition --skip-dns
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
 
-  Re-run with a custom working directory:
-    %(prog)s --config config/clusters/my-cluster-01.yaml --work-dir /tmp/ocp-dry-run
+def _die(msg: str) -> None:
+    print(f"ERROR: {msg}")
+    sys.exit(1)
 
-  Destroy a previously bootstrapped cluster:
-    %(prog)s --config config/clusters/my-cluster-01.yaml --destroy
 
-  Extend the CSR approval window to 60 minutes:
-    %(prog)s --config config/clusters/my-cluster-01.yaml --csr-timeout 60
-        """,
+def _validate_name(name: str) -> None:
+    if len(name) > 27:
+        _die(f"Cluster name '{name}' exceeds 27 characters")
+    if not all(c.isalnum() or c == "-" for c in name):
+        _die(f"Cluster name '{name}': only alphanumeric + hyphens allowed")
+    if name.startswith("-") or name.endswith("-"):
+        _die(f"Cluster name '{name}': cannot start or end with a hyphen")
+
+
+def _build_context(args) -> ClusterCtx:
+    config_path = Path(args.config)
+    if not config_path.exists():
+        available = [f.stem for f in CLUSTERS_DIR.glob("*.yaml")] if CLUSTERS_DIR.exists() else []
+        _die(f"Config not found: {config_path}" + (f"  Available: {available}" if available else ""))
+
+    cluster_cfg = yaml.safe_load(config_path.read_text()) or {}
+    name = cluster_cfg.get("cluster_name")
+    site = cluster_cfg.get("site")
+    if not name:
+        _die("'cluster_name' is required in the cluster config")
+    if not site:
+        _die("'site' is required in the cluster config")
+    _validate_name(name)
+
+    cluster_dir = Path(args.work_dir) / name
+    cluster_dir.mkdir(parents=True, exist_ok=True)
+    logger = setup_logging(name, cluster_dir)
+
+    profile = load_site_profile(site)
+    profile.update({k: v for k, v in cluster_cfg.items() if k not in ("cluster_name", "site")})
+    logger.info(f"=== Bootstrap: {name} | site: {site} | dir: {cluster_dir} ===")
+
+    return ClusterCtx(
+        name=name, site=site, profile=profile,
+        cluster_dir=cluster_dir,
+        install_dir=cluster_dir / "install",
+        ignition_dir=cluster_dir / "ignition",
+        tfstate_path=cluster_dir / "terraform.tfstate",
+        logger=logger,
+        segment=cluster_cfg.get("segment") or "",
+        vlan_id=str(cluster_cfg.get("vlan_id", "0")),
     )
 
-    parser.add_argument("--config", required=True,
-                        help="Path to cluster config YAML (config/clusters/<name>.yaml)")
-    parser.add_argument("--work-dir", default=str(DEFAULT_WORK_DIR),
-                        help=f"Base working directory (default: {DEFAULT_WORK_DIR})")
 
-    # Destroy
-    parser.add_argument("--destroy", action="store_true",
-                        help="Destroy the cluster (runs terraform destroy using existing tfvars)")
+# ---------------------------------------------------------------------------
+# Phases  (add a new phase: write _run_X, add one line to main)
+# ---------------------------------------------------------------------------
 
-    # Skip flags (runtime control — not in the cluster config)
-    parser.add_argument("--skip-dns", action="store_true",
-                        help="Skip DNS record creation")
-    parser.add_argument("--skip-terraform", action="store_true",
-                        help="Skip terraform apply (generate configs only)")
-    parser.add_argument("--skip-csr", action="store_true",
-                        help="Skip CSR approval loop")
-    parser.add_argument("--skip-ignition", action="store_true",
-                        help="Skip openshift-install steps (use existing ignition)")
-    parser.add_argument("--csr-timeout", type=int, default=45,
-                        help="CSR approval timeout in minutes (default: 45)")
-
-    return parser.parse_args()
-
-
-def validate_cluster_name(name: str) -> None:
-    if len(name) > 27:
-        print(f"ERROR: Cluster name '{name}' exceeds 27 characters")
+def _run_destroy(ctx: ClusterCtx) -> None:
+    tfvars = ctx.cluster_dir / "terraform.tfvars"
+    if not tfvars.exists():
+        ctx.logger.error(f"No terraform.tfvars at {tfvars}. Run bootstrap first.")
         sys.exit(1)
-    if not all(c.isalnum() or c == "-" for c in name):
-        print(f"ERROR: Cluster name '{name}' contains invalid characters")
+    run_terraform_destroy(terraform_bin=ctx.terraform_bin, terraform_dir=ctx.terraform_dir,
+                          tfvars_path=tfvars, tfstate_path=ctx.tfstate_path,
+                          plugin_dir=ctx.plugin_dir, logger=ctx.logger)
+
+
+def _run_network(ctx: ClusterCtx) -> None:
+    if not ctx.segment:
+        ctx.segment, ctx.vlan_id = allocate_vlan(
+            cluster_name=ctx.name, site=ctx.site,
+            vlan_manager_url=ctx.profile["vlan_manager_url"],
+            vrf=ctx.profile.get("vlan_manager_vrf", "default"),
+            logger=ctx.logger,
+        )
+    ctx.ip_info = calculate_ips(ctx.segment, ctx.profile, ctx.logger)
+
+
+def _run_templates(ctx: ClusterCtx) -> None:
+    ctx.template_ctx = build_template_context(
+        cluster_name=ctx.name, profile=ctx.profile, ip_info=ctx.ip_info,
+        segment=ctx.segment, vlan_id=ctx.vlan_id, cluster_dir=ctx.cluster_dir,
+    )
+    ctx.template_outputs = render_templates(ctx.template_ctx, ctx.cluster_dir, ctx.logger)
+
+
+def _run_ignition(ctx: ClusterCtx, args) -> None:
+    if args.skip_ignition:
+        ctx.logger.info("Skipping ignition (--skip-ignition)")
+        return
+    install_bin = ctx.profile.get("openshift_install_bin", "openshift-install-4.20")
+    create_manifests(install_bin, ctx.install_dir, ctx.logger)
+    inject_v4_internal_subnet(ctx.template_outputs["v4-internal-subnet"], ctx.install_dir, ctx.logger)
+    create_ignition_configs(install_bin, ctx.install_dir, ctx.ignition_dir, ctx.logger)
+
+
+def _run_dns(ctx: ClusterCtx, args) -> None:
+    if args.skip_dns:
+        ctx.logger.info("Skipping DNS (--skip-dns)")
+        return
+    url = ctx.profile.get("wildcard_dns_api_url")
+    if not url:
+        ctx.logger.error("wildcard_dns_api_url not set — configure it in the site or cluster config")
         sys.exit(1)
-    if name.startswith("-") or name.endswith("-"):
-        print(f"ERROR: Cluster name '{name}' cannot start or end with a hyphen")
-        sys.exit(1)
+    try:
+        create_wildcard_dns_via_api(ctx.name, url, ctx.logger)
+    except RuntimeError as e:
+        ctx.logger.error(str(e))
+        ctx.logger.error("Retry later with --skip-ignition --skip-terraform")
 
 
-def print_summary(
-    cluster_name: str,
-    profile: Dict[str, Any],
-    ip_info: Dict[str, Any],
-    vlan_id: str,
-    segment: str,
-    cluster_dir: Path,
-    logger: logging.Logger,
-) -> None:
-    summary = f"""
+def _run_csr(ctx: ClusterCtx, args) -> None:
+    if args.skip_csr:
+        ctx.logger.info("Skipping CSR approval (--skip-csr)")
+        return
+    approve_csrs(ctx.kubeconfig, ctx.logger, timeout_minutes=args.csr_timeout)
+
+
+def _run_argocd(ctx: ClusterCtx, args) -> None:
+    if args.skip_argocd or not ctx.profile.get("argocd_hub_api_url"):
+        if args.skip_argocd:
+            ctx.logger.info("Skipping ArgoCD registration (--skip-argocd)")
+        return
+    register_cluster_in_argocd(ctx.name, ctx.kubeconfig, ctx.profile, ctx.logger)
+
+
+def _run_terraform(ctx: ClusterCtx, args) -> None:
+    if args.skip_terraform:
+        ctx.logger.info("Skipping terraform (--skip-terraform)")
+        return
+    run_terraform(terraform_bin=ctx.terraform_bin, terraform_dir=ctx.terraform_dir,
+                  tfvars_path=ctx.template_outputs["terraform.tfvars"],
+                  tfstate_path=ctx.tfstate_path, plugin_dir=ctx.plugin_dir, logger=ctx.logger)
+    _run_csr(ctx, args)
+    _run_argocd(ctx, args)
+
+
+def _save_context(ctx: ClusterCtx) -> None:
+    ctx_file = ctx.cluster_dir / "cluster-context.yaml"
+    dump = {k: v for k, v in ctx.template_ctx.items() if isinstance(v, (str, int, float, list, dict, bool))}
+    ctx_file.write_text(yaml.dump(dump, default_flow_style=False))
+
+    compute = ", ".join(ctx.ip_info.get("compute_ips", [])) or "(none)"
+    ctx.logger.info(f"""
 {'='*70}
-  CLUSTER BOOTSTRAP COMPLETE: {cluster_name}
+  CLUSTER BOOTSTRAP COMPLETE: {ctx.name}
 {'='*70}
 
-  Site:             {profile['site_name']}
-  Segment:          {segment}
-  Gateway:          {ip_info['gateway']}
+  Site:          {ctx.profile.get('site_name', ctx.site)}
+  Segment:       {ctx.segment}  (gateway: {ctx.ip_info.get('gateway', '')})
+  Control Plane: {', '.join(ctx.ip_info.get('control_plane_ips', []))}
+  Infra Nodes:   {', '.join(ctx.ip_info.get('infra_ips', []))}
+  Compute Nodes: {compute}
 
-  Control Plane:    {', '.join(ip_info['control_plane_ips'])}  (api / api-int)
-  Infra Nodes:      {', '.join(ip_info['infra_ips'])}  (*.apps ingress)
-  Compute Nodes:    {', '.join(ip_info['compute_ips']) if ip_info['compute_ips'] else '(none)'}
-  Bootstrap:        {ip_info['bootstrap_ip']}
+  Kubeconfig:    {ctx.cluster_dir}/auth/kubeconfig
+  Context file:  {ctx_file}
 
-  Kubeconfig:       {cluster_dir}/auth/kubeconfig
-  Install Config:   {cluster_dir}/install-config.yaml.backup
-  Terraform vars:   {cluster_dir}/terraform.tfvars
-  Log file:         {cluster_dir}/{cluster_name}-bootstrap.log
+  export KUBECONFIG={ctx.cluster_dir}/auth/kubeconfig
+{'='*70}""")
 
-  Next steps:
-    1. export KUBECONFIG={cluster_dir}/auth/kubeconfig
-    2. oc get nodes
-    3. Run Day2 bootstrap (GitOps operator + ArgoCD)
-{'='*70}
-"""
-    logger.info(summary)
 
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     args = parse_args()
+    ctx = _build_context(args)
+    validate_prerequisites(ctx.profile, args, ctx.logger)
 
-    # Load cluster config
-    config_path = Path(args.config)
-    if not config_path.exists():
-        print(f"ERROR: Cluster config not found: {config_path}")
-        available = list(CLUSTERS_DIR.glob("*.yaml")) if CLUSTERS_DIR.exists() else []
-        if available:
-            print(f"Available clusters: {[f.stem for f in available]}")
-        sys.exit(1)
-
-    with open(config_path) as f:
-        cluster_cfg = yaml.safe_load(f) or {}
-
-    cluster_name = cluster_cfg.get("cluster_name")
-    site = cluster_cfg.get("site")
-    if not cluster_name:
-        print("ERROR: 'cluster_name' is required in the cluster config")
-        sys.exit(1)
-    if not site:
-        print("ERROR: 'site' is required in the cluster config")
-        sys.exit(1)
-
-    validate_cluster_name(cluster_name)
-
-    work_dir = Path(args.work_dir)
-    cluster_dir = work_dir / cluster_name
-    install_dir = cluster_dir / "install"
-    ignition_dir = cluster_dir / "ignition"
-    tfstate_path = cluster_dir / "terraform.tfstate"
-    cluster_dir.mkdir(parents=True, exist_ok=True)
-
-    logger = setup_logging(cluster_name, cluster_dir)
-    logger.info(f"=== Starting bootstrap for cluster: {cluster_name} ===")
-    logger.info(f"Config: {config_path} | Site: {site} | Work dir: {cluster_dir}")
-
-    # Step 1: Three-layer merge — defaults → site → cluster config
-    profile = load_site_profile(site)
-    cluster_overrides = {k: v for k, v in cluster_cfg.items() if k not in ("cluster_name", "site")}
-    profile.update(cluster_overrides)
-    logger.info(f"Profile loaded: defaults → site:{site} → cluster:{cluster_name}")
-
-    # Destroy path — short-circuit before any provisioning steps
     if args.destroy:
-        existing_tfvars = cluster_dir / "terraform.tfvars"
-        if not existing_tfvars.exists():
-            logger.error(
-                f"No terraform.tfvars found at {existing_tfvars}. Run bootstrap first."
-            )
-            sys.exit(1)
-        run_terraform_destroy(
-            terraform_bin=profile.get("terraform_bin", "terraform"),
-            terraform_dir=profile.get("terraform_dir", str(TERRAFORM_DIR)),
-            tfvars_path=existing_tfvars,
-            tfstate_path=tfstate_path,
-            plugin_dir=profile.get("terraform_plugin_dir") or None,
-            logger=logger,
-        )
+        _run_destroy(ctx)
         return
 
-    # Step 2: Resolve segment / VLAN (from cluster config or VLAN Manager)
-    segment = cluster_cfg.get("segment")
-    vlan_id = str(cluster_cfg.get("vlan_id", "0"))
-    if segment:
-        logger.info(f"Using segment={segment}, vlan_id={vlan_id} from cluster config")
-    else:
-        segment, vlan_id = allocate_vlan(
-            cluster_name=cluster_name,
-            site=site,
-            vlan_manager_url=profile["vlan_manager_url"],
-            vrf=profile.get("vlan_manager_vrf", "default"),
-            logger=logger,
-        )
-
-    # Step 3: Calculate IPs
-    ip_info = calculate_ips(segment, profile, logger)
-
-    # Step 4: Render templates
-    ctx = build_template_context(
-        cluster_name=cluster_name,
-        profile=profile,
-        ip_info=ip_info,
-        segment=segment,
-        vlan_id=vlan_id,
-        cluster_dir=cluster_dir,
-    )
-    outputs = render_templates(ctx, cluster_dir, logger)
-
-    # Step 5: OpenShift installer
-    if not args.skip_ignition:
-        install_bin = profile.get("openshift_install_bin", "openshift-install-4.20")
-        create_manifests(install_bin, install_dir, logger)
-        inject_v4_internal_subnet(outputs["v4-internal-subnet"], install_dir, logger)
-        create_ignition_configs(install_bin, install_dir, ignition_dir, logger)
-    else:
-        logger.info("Skipping openshift-install steps (--skip-ignition)")
-
-    # Step 6: Wildcard DNS via API (api/api-int handled by Terraform exec provisioner)
-    if not args.skip_dns:
-        wildcard_dns_url = profile.get("wildcard_dns_api_url")
-        if not wildcard_dns_url:
-            logger.error(
-                "No wildcard DNS endpoint configured. "
-                "Set wildcard_dns_api_url in the site or cluster config."
-            )
-            sys.exit(1)
-        try:
-            create_wildcard_dns_via_api(cluster_name, wildcard_dns_url, logger)
-        except RuntimeError as e:
-            logger.error(str(e))
-            logger.error("You can retry later: re-run with --skip-terraform --skip-ignition")
-    else:
-        logger.info("Skipping DNS record creation (--skip-dns)")
-
-    # Step 7: Terraform
-    if not args.skip_terraform:
-        run_terraform(
-            terraform_bin=profile.get("terraform_bin", "terraform"),
-            terraform_dir=profile.get("terraform_dir", str(TERRAFORM_DIR)),
-            tfvars_path=outputs["terraform.tfvars"],
-            tfstate_path=tfstate_path,
-            plugin_dir=profile.get("terraform_plugin_dir") or None,
-            logger=logger,
-        )
-
-        # Step 8: CSR approval
-        kubeconfig = cluster_dir / "auth" / "kubeconfig"
-        if not args.skip_csr:
-            approve_csrs(kubeconfig, logger, timeout_minutes=args.csr_timeout)
-        else:
-            logger.info("Skipping CSR approval loop (--skip-csr)")
-    else:
-        logger.info("Skipping terraform apply (--skip-terraform)")
-
-    # Summary + save context
-    print_summary(cluster_name, profile, ip_info, vlan_id, segment, cluster_dir, logger)
-
-    ctx_dump = {k: v for k, v in ctx.items() if isinstance(v, (str, int, float, list, dict, bool))}
-    ctx_file = cluster_dir / "cluster-context.yaml"
-    with open(ctx_file, "w") as f:
-        yaml.dump(ctx_dump, f, default_flow_style=False)
-    logger.info(f"Saved cluster context -> {ctx_file}")
+    _run_network(ctx)
+    _run_templates(ctx)
+    _run_ignition(ctx, args)
+    _run_dns(ctx, args)
+    _run_terraform(ctx, args)
+    _save_context(ctx)

@@ -20,3 +20,11 @@ vm_network: VLAN105-OCP # vSphere port group (EPG) for this cluster's VMs
 # wildcard_dns_api_url: http://other-dns-api/api/wildcard
 # openshift_install_bin: /usr/local/bin/openshift-install-4.21
 # terraform_dir: /opt/ocp-terraform-dev
+
+# Optional: ArgoCD hub registration
+# When set, automatically registers this cluster in the hub ArgoCD after provisioning.
+# argocd_hub_api_url: https://api.hub-cluster.example.com:6443
+# argocd_hub_token: <sa-token-plain-text>      # plain text token (recommended for disconnected git repos)
+# argocd_hub_token_env: HUB_CLUSTER_SA_TOKEN   # alternative: env var name (omit argocd_hub_token if using this)
+# argocd_namespace: argocd                     # optional, default: argocd
+# argocd_insecure_skip_tls: false              # optional, default: false

@@ -26,6 +26,9 @@ vsphere/terraform.tfvars
 # Generated at runtime by bootstrap tool (filesystem_mirror CLI config)
 **/.providers.tfrc
 
+# Binaries — utils_bin/ is intentionally NOT ignored — large files are tracked via Git LFS
+# (.gitattributes: utils_bin/* filter=lfs diff=lfs merge=lfs -text)
+
 # Sensitive config files — drop these in config/ but never commit them
 config/pull-secret.json
 config/additional-trust-bundle.pem

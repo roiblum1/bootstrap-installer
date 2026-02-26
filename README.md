@@ -30,7 +30,9 @@ defaults.yaml                          │
      │
      ├──> Terraform           (provision VMs + api/api-int DNS via exec provisioner)
      │
-     └──> CSR approval loop   (auto-approve until all nodes Ready)
+     ├──> CSR approval loop   (auto-approve until all nodes Ready)
+     │
+     └──> ArgoCD registration (optional — register spoke into hub ArgoCD)
 ```
 
 **DNS topology — no VIPs, no load balancer required:**
@@ -45,26 +47,62 @@ defaults.yaml                          │
 
 ## Prerequisites
 
-| Tool                     | Purpose                                  |
-| ------------------------ | ---------------------------------------- |
-| Python 3.9+              | Run this tool                            |
-| `openshift-install-4.20` | Generate manifests and ignition configs  |
-| `terraform` ≥ 0.13       | Provision vSphere VMs                    |
-| `oc` CLI                 | CSR approval loop                        |
+| Tool                     | Purpose                                            |
+| ------------------------ | -------------------------------------------------- |
+| Python 3.10+             | Run this tool                                      |
+| `openshift-install-4.20` | Generate manifests and ignition configs            |
+| `terraform` ≥ 1.0        | Provision vSphere VMs                              |
+| `oc` CLI                 | CSR approval loop; ArgoCD hub cluster registration |
 
-Terraform providers (`vmware/vsphere`, `community-terraform-providers/ignition`, `hashicorp/null`) are **pre-downloaded** into `vsphere/providers/` and committed to this repo. No internet access is needed after cloning.
+The tool validates all required binaries at startup before any provisioning work begins.
 
 ---
 
 ## Installation
 
+### 1. Clone and install Python dependencies
+
 ```bash
 git clone <repo-url>
 cd bootstrap-installer
+git lfs pull          # download pre-committed binaries from utils_bin/
 pip install -r requirements.txt
 ```
 
-No additional Terraform setup needed. `terraform init` will use the committed local providers automatically.
+Python packages required (`requirements.txt`):
+
+| Package    | Version  | Purpose                        |
+| ---------- | -------- | ------------------------------ |
+| `PyYAML`   | ≥ 6.0    | Config file parsing            |
+| `Jinja2`   | ≥ 3.1    | Template rendering             |
+| `requests` | ≥ 2.31   | DNS API + VLAN Manager calls   |
+
+### 2. Install binaries
+
+Pre-built binaries for the target Linux environment are committed under `utils_bin/` (tracked with Git LFS):
+
+| File                                    | Binary       | Version      |
+| --------------------------------------- | ------------ | ------------ |
+| `utils_bin/argocd-linux-amd64`          | `argocd` CLI | see filename |
+| `utils_bin/terraform_*_linux_amd64.zip` | `terraform`  | see filename |
+
+Copy or symlink these to a directory on your `PATH` on the machine running the bootstrap tool (typically the bastion host):
+
+```bash
+# ArgoCD CLI
+cp utils_bin/argocd-linux-amd64 /usr/local/bin/argocd
+chmod +x /usr/local/bin/argocd
+
+# Terraform — extract the zip
+unzip utils_bin/terraform_*_linux_amd64.zip -d /usr/local/bin/
+chmod +x /usr/local/bin/terraform
+```
+
+`openshift-install` and `oc` must be obtained separately from your Red Hat mirror and placed on `PATH`.
+
+### 3. Terraform providers
+
+Terraform providers (`vmware/vsphere`, `community-terraform-providers/ignition`, `hashicorp/null`) are **pre-downloaded** into `vsphere/providers/` and committed to this repo. No internet access is needed — `terraform init` will use the committed local providers automatically.
 
 ---
 
@@ -88,6 +126,7 @@ gateway_offset: 254
 infra_ip_offsets: [1, 2, 3]
 control_plane_ip_offsets: [4, 5, 6]
 bootstrap_ip_offset: 7
+compute_ip_offsets: []         # empty = no compute nodes; e.g. [8, 9, 10] to add 3
 
 # VM sizing
 control_plane_num_cpus: 8
@@ -153,6 +192,13 @@ vlan_id: 105
 # vSphere port group for this cluster's VMs
 vm_network: VLAN105-OCP
 
+# Optional: compute nodes (workers — infra nodes handle all workloads by default)
+# compute_ip_offsets: [8, 9, 10]   # 3 compute nodes at .8, .9, .10
+
+# Optional: ArgoCD hub registration (see section below)
+# argocd_hub_api_url: https://api.hub-cluster.example.com:6443
+# argocd_hub_token: <sa-token>
+
 # Any key from defaults.yaml or the site profile can be overridden here
 # openshift_install_bin: /usr/local/bin/openshift-install-4.21
 ```
@@ -177,7 +223,7 @@ export VSPHERE_PASSWORD="your-vcenter-password"
 ## Usage
 
 ```bash
-# Full bootstrap — ignition + DNS + Terraform + CSR approval
+# Full bootstrap — ignition + DNS + Terraform + CSR approval (+ ArgoCD if configured)
 python3 bootstrap.py --config config/clusters/my-cluster-01.yaml
 
 # Generate configs only, no Terraform (dry-run / review)
@@ -194,9 +240,46 @@ python3 bootstrap.py --config config/clusters/my-cluster-01.yaml --destroy
 
 # Extend the CSR approval window to 60 minutes
 python3 bootstrap.py --config config/clusters/my-cluster-01.yaml --csr-timeout 60
+
+# Skip ArgoCD registration even if configured in the cluster YAML
+python3 bootstrap.py --config config/clusters/my-cluster-01.yaml --skip-argocd
 ```
 
 Run `python3 bootstrap.py --help` for the full reference.
+
+---
+
+## ArgoCD Hub Registration
+
+When `argocd_hub_api_url` is set in the cluster config, the bootstrap tool automatically registers the newly provisioned spoke cluster into ArgoCD on the hub after the cluster is Available. No `argocd` CLI is required.
+
+**How it works:**
+
+1. Creates an `argocd-manager` ServiceAccount in `kube-system` on the spoke cluster
+2. Creates a static (non-expiring) SA token Secret tied to that ServiceAccount
+3. Binds `argocd-manager` to the `cluster-admin` ClusterRole
+4. Applies an ArgoCD cluster Secret to the hub cluster's ArgoCD namespace
+
+The cluster Secret uses the `argocd.argoproj.io/secret-type: cluster` label — ArgoCD watches for these and automatically adds the cluster to its inventory (no project name needed; projects are separate from cluster registration).
+
+**Cluster config fields:**
+
+```yaml
+# Required
+argocd_hub_api_url: https://api.hub-cluster.example.com:6443
+
+# Token — use one of:
+argocd_hub_token: <sa-token-plain-text>      # plain text in YAML (fine for private/disconnected repos)
+argocd_hub_token_env: HUB_CLUSTER_SA_TOKEN   # env var name (alternative)
+
+# Optional
+argocd_namespace: argocd          # default: argocd
+argocd_insecure_skip_tls: false   # default: false
+```
+
+The hub token must belong to a ServiceAccount with permission to create Secrets in the ArgoCD namespace (typically a `cluster-admin` SA on the hub).
+
+**Skip flag:** `--skip-argocd` skips this step even if configured.
 
 ---
 
@@ -206,6 +289,15 @@ Run `python3 bootstrap.py --help` for the full reference.
 bootstrap-installer/
 ├── bootstrap.py                      # Entrypoint
 ├── requirements.txt
+├── clusters/                         # Cluster output (default work dir — git-tracked)
+│   └── <cluster-name>/
+│       ├── auth/                     # kubeconfig, kubeadmin-password (gitignored)
+│       ├── ignition/                 # bootstrap.ign, master.ign, worker.ign
+│       ├── terraform.tfstate         # Per-cluster Terraform state (tracked)
+│       ├── terraform.tfvars          # Generated Terraform variables
+│       ├── install-config.yaml.backup
+│       ├── cluster-context.yaml      # Full rendered context
+│       └── <name>-bootstrap.log      # Execution log (gitignored)
 ├── config/
 │   ├── defaults.yaml                 # Global defaults (committed)
 │   ├── sites/
@@ -223,11 +315,12 @@ bootstrap-installer/
 │   ├── terraform.py                  # Terraform init/plan/apply/destroy
 │   ├── dns.py                        # Wildcard DNS API call
 │   ├── csr.py                        # CSR approval loop
-│   └── utils.py                      # Logging, run_cmd
+│   ├── argocd.py                     # ArgoCD hub cluster registration
+│   └── utils.py                      # Logging, run_cmd, validate_prerequisites
 ├── templates/
 │   ├── install-config.yaml.j2        # OpenShift install config
 │   ├── terraform.tfvars.j2           # Terraform input variables
-│   └── v4-internal-subnet.yaml.j2    # OVN v4InternalSubnet manifest
+│   └── v4-internal-subnet.yaml.j2   # OVN v4InternalSubnet manifest
 └── vsphere/                          # Terraform root module
     ├── main.tf                       # VMs, folder, resource pool, DNS modules
     ├── variables.tf
@@ -249,36 +342,33 @@ bootstrap-installer/
 
 From a `/24` segment (e.g. `10.0.5.0/24`) the default offsets produce:
 
-| IP                   | Role                                          |
-| -------------------- | --------------------------------------------- |
+| IP                   | Role                                         |
+| -------------------- | -------------------------------------------- |
 | 10.0.5.1 - 10.0.5.3 | Infra nodes (`*.apps` ingress)                |
 | 10.0.5.4 - 10.0.5.6 | Control plane (`api` / `api-int`)             |
-| 10.0.5.7             | Bootstrap (temporary, removed after install)  |
-| 10.0.5.254           | Gateway                                       |
+| 10.0.5.7             | Bootstrap (temporary, removed after install) |
+| 10.0.5.8+            | Compute nodes (optional, empty by default)   |
+| 10.0.5.254           | Gateway                                      |
 
-Override `infra_ip_offsets`, `control_plane_ip_offsets`, `bootstrap_ip_offset`, and `gateway_offset` in `defaults.yaml` or the site profile to change the layout.
+Override `infra_ip_offsets`, `control_plane_ip_offsets`, `bootstrap_ip_offset`, `compute_ip_offsets`, and `gateway_offset` in `defaults.yaml` or the site profile to change the layout.
 
 ---
 
-## Output
+## Cluster State & Multi-Cluster Operations
 
-Cluster artifacts are written to `<work-dir>/<cluster-name>/` (default: `/opt/ocp-clusters/<cluster-name>/`):
+Cluster artifacts are written to `clusters/<cluster-name>/` inside this repo (the default work dir). This means cluster state — Terraform state, ignition configs, rendered configs — survives across machines via `git push`/`git clone`.
 
-```
-/opt/ocp-clusters/my-cluster-01/
-├── auth/
-│   ├── kubeconfig
-│   └── kubeadmin-password
-├── ignition/
-│   ├── bootstrap.ign
-│   ├── master.ign
-│   └── worker.ign
-├── install/                          # openshift-install working directory
-├── install-config.yaml.backup        # Preserved before consumption by openshift-install
-├── terraform.tfvars                  # Generated and passed to Terraform
-├── terraform.tfstate                 # Per-cluster state (kept separate per cluster)
-├── cluster-context.yaml              # Full rendered context (for Day2 tooling)
-└── my-cluster-01-bootstrap.log       # Full execution log
+Credentials (`auth/`) and logs are gitignored. Everything else is tracked.
+
+**Per-cluster Terraform state isolation:** each cluster's `terraform.tfstate` lives at `clusters/<name>/terraform.tfstate`. All Terraform commands pass `-state=<cluster-specific-path>`, so destroying one cluster never affects others.
+
+```bash
+# Create cluster A and cluster B independently
+python3 bootstrap.py --config config/clusters/cluster-a.yaml
+python3 bootstrap.py --config config/clusters/cluster-b.yaml
+
+# Destroy only cluster B — cluster A is untouched
+python3 bootstrap.py --config config/clusters/cluster-b.yaml --destroy
 ```
 
 ---
@@ -305,9 +395,11 @@ git commit -m "Update Terraform providers to <version>"
 ## After Bootstrap
 
 ```bash
-export KUBECONFIG=/opt/ocp-clusters/my-cluster-01/auth/kubeconfig
+export KUBECONFIG=clusters/my-cluster-01/auth/kubeconfig
 oc get nodes
 oc get clusteroperators
 ```
 
 Once all nodes are `Ready` and all cluster operators are `Available`, proceed with Day2: install the OpenShift GitOps operator and point ArgoCD at your GitOps repository to manage infra labeling, LDAP, MCE, additional operators, and everything else.
+
+If `argocd_hub_api_url` was set in the cluster config, the cluster is already registered in your hub ArgoCD — check Settings → Clusters in the ArgoCD UI.

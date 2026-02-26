@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -63,3 +64,36 @@ def run_cmd(
         raise RuntimeError(f"Command failed: {cmd_str}\n{result.stderr}")
 
     return result
+
+
+def validate_prerequisites(
+    profile: Dict, args, logger: logging.Logger
+) -> None:
+    """Fail fast if required binaries are missing before any provisioning work starts."""
+    missing = []
+    checks = []
+
+    if not getattr(args, "skip_ignition", False):
+        checks.append(
+            ("openshift-install", profile.get("openshift_install_bin", "openshift-install-4.20"))
+        )
+    if not getattr(args, "skip_terraform", False):
+        checks.append(("terraform", profile.get("terraform_bin", "terraform")))
+
+    need_oc = (
+        not getattr(args, "skip_csr", False) and not getattr(args, "skip_terraform", False)
+    ) or bool(profile.get("argocd_hub_api_url"))
+    if need_oc:
+        checks.append(("oc", "oc"))
+
+    for label, binary in checks:
+        if not shutil.which(binary):
+            missing.append(f"  {label}: '{binary}' not found in PATH")
+
+    if missing:
+        logger.error("Pre-flight check failed — missing required binaries:")
+        for m in missing:
+            logger.error(m)
+        sys.exit(1)
+
+    logger.info("Pre-flight check passed (all required binaries found)")
