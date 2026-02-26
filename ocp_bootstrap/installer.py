@@ -16,7 +16,7 @@ def inject_v4_internal_subnet(
     manifest_path: Path, install_dir: Path, logger: logging.Logger
 ) -> None:
     """Inject v4InternalSubnet manifest into the openshift manifests directory."""
-    target = install_dir / "manifests" / "cluster-infrastructure-02-config.yml"
+    target = install_dir / "manifests" / "cluster-network-03-config.yml"
     shutil.copy2(manifest_path, target)
     logger.info(f"Injected v4InternalSubnet manifest -> {target}")
 

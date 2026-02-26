@@ -17,8 +17,9 @@ additionalTrustBundle: |-
 {{ additional_trust_bundle | indent(2, first=True) }}
 {%- endif %}
 sshKey: '{{ ssh_key }}'
-imageDigestMirror:
+imageDigestSources:
 {% for entry in image_mirrors -%}
-- mirror: {{ entry.mirror }}
+- mirrors: 
+  - {{ entry.mirror }}
   source: {{ entry.source }}
 {% endfor -%}

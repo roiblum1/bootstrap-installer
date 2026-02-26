@@ -105,11 +105,13 @@ def run_terraform(
         sys.exit(0)
 
     logger.info("Running terraform apply...")
-    run_cmd(
+    apply_result = subprocess.run(
         [terraform_bin, "apply", f"-state={tfstate_path}", "-auto-approve", "tfplan"],
         cwd=tf_dir,
-        logger=logger,
     )
+    if apply_result.returncode != 0:
+        logger.error("Terraform apply failed")
+        sys.exit(1)
 
     logger.info("Terraform apply completed")
 
